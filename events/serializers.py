@@ -12,7 +12,7 @@ class AvailabilitySerializer(serializers.ModelSerializer):
     
     class Meta:
         model = Availability
-        fields = ['id', 'user', 'start_time', 'end_time']
+        fields = ['id', 'user', 'event', 'start_time', 'end_time']
 
 class EventSerializer(serializers.ModelSerializer):
     creator = UserSerializer(read_only=True)
