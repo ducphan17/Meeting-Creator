@@ -1,5 +1,14 @@
-venv/
-*.pyc
+# Python/Django
 __pycache__/
-.env
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.env
+venv/
+*.sqlite3
+*.log
 static/
+nohup.out
+rds-ca-bundle.pem
+CS_3354_Deliverable_01/
