@@ -58,22 +58,25 @@ const normalizeDate = (date: Date) => {
 const generateCalendarDays = (year: number, month: number) => {
     const firstDayOfMonth = new Date(year, month, 1);
     const lastDayOfMonth = new Date(year, month + 1, 0);
-    const days: { date: Date; isInRange: boolean }[] = [];
+    const today = normalizeDate(new Date()); // Normalize today's date to midnight
+    const days: { date: Date; isInRange: boolean; isPast: boolean }[] = [];
 
     // Add padding days before the first day of the month
     const firstDayIndex = firstDayOfMonth.getDay();
     for (let i = 0; i < firstDayIndex; i++) {
         const date = new Date(year, month, 1 - (firstDayIndex - i));
-        days.push({ date, isInRange: false });
+        const isPast = normalizeDate(date) < today;
+        days.push({ date, isInRange: false, isPast });
     }
 
     // Add days of the month
     for (let day = 1; day <= lastDayOfMonth.getDate(); day++) {
         const date = new Date(year, month, day);
         const minDate = new Date(2025, 3, 27); // April 27, 2025
-        const maxDate = new Date(2025, 4, 26); // May 26, 2025
+        const maxDate = new Date(2025, 5, 30); // June 30, 2025
         const isInRange = date >= minDate && date <= maxDate;
-        days.push({ date, isInRange });
+        const isPast = normalizeDate(date) < today;
+        days.push({ date, isInRange, isPast });
     }
 
     // Add padding days after the last day of the month to fill the grid
@@ -81,7 +84,8 @@ const generateCalendarDays = (year: number, month: number) => {
     const remainingDays = (7 - (lastDayIndex + 1)) % 7;
     for (let i = 1; i <= remainingDays; i++) {
         const date = new Date(year, month + 1, i);
-        days.push({ date, isInRange: false });
+        const isPast = normalizeDate(date) < today;
+        days.push({ date, isInRange: false, isPast });
     }
 
     return days;
@@ -97,7 +101,15 @@ export default function Availability() {
     const [availability, setAvailability] = useState<{ [date: string]: { start: string; end: string } }>({});
     const [groupAvailability, setGroupAvailability] = useState<{ date: string; slots: GroupAvailabilitySlot[] }[]>([]);
     const [error, setError] = useState("");
-    const [currentMonth, setCurrentMonth] = useState(3); // Start with April 2025 (month is 0-based)
+
+    // Determine the current month dynamically based on today's date
+    const today = new Date(); // Current date: May 1, 2025
+    const currentYear = today.getFullYear();
+    const currentMonthIndex = today.getMonth(); // 0-based month (May is 4)
+    const [currentMonth, setCurrentMonth] = useState(currentMonthIndex); // Start with current month (May 2025)
+
+    // Define the months to display: current month and next month
+    const monthsToDisplay = [currentMonthIndex, currentMonthIndex + 1].filter(month => month <= 5); // Filter to not exceed June (month 5)
 
     // Load event details from localStorage
     useEffect(() => {
@@ -281,13 +293,13 @@ export default function Availability() {
     };
 
     const handlePreviousMonth = () => {
-        if (currentMonth > 3) { // April is the earliest month
+        if (currentMonth > currentMonthIndex) { // Don't go before the current month
             setCurrentMonth(prev => prev - 1);
         }
     };
 
     const handleNextMonth = () => {
-        if (currentMonth < 4) { // May is the latest month
+        if (currentMonth < currentMonthIndex + 1) { // Only allow up to the next month
             setCurrentMonth(prev => prev + 1);
         }
     };
@@ -312,9 +324,9 @@ export default function Availability() {
                         <div className="flex items-center justify-between mb-4">
                             <button
                                 onClick={handlePreviousMonth}
-                                disabled={currentMonth === 3}
+                                disabled={currentMonth === currentMonthIndex}
                                 className={`text-white p-2 rounded-full hover:bg-white/20 transition-all ${
-                                    currentMonth === 3 ? "opacity-50 cursor-not-allowed" : ""
+                                    currentMonth === currentMonthIndex ? "opacity-50 cursor-not-allowed" : ""
                                 }`}
                             >
                                 <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -326,9 +338,9 @@ export default function Availability() {
                             </h3>
                             <button
                                 onClick={handleNextMonth}
-                                disabled={currentMonth === 4}
+                                disabled={currentMonth === currentMonthIndex + 1}
                                 className={`text-white p-2 rounded-full hover:bg-white/20 transition-all ${
-                                    currentMonth === 4 ? "opacity-50 cursor-not-allowed" : ""
+                                    currentMonth === currentMonthIndex + 1 ? "opacity-50 cursor-not-allowed" : ""
                                 }`}
                             >
                                 <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -342,14 +354,14 @@ export default function Availability() {
                                     {day.key}
                                 </div>
                             ))}
-                            {calendarDays.map(({ date, isInRange }, index) => {
+                            {calendarDays.map(({ date, isInRange, isPast }, index) => {
                                 const year = date.getFullYear();
                                 const month = date.getMonth() + 1;
                                 const day = date.getDate();
                                 const dateString = `${year}-${month.toString().padStart(2, "0")}-${day.toString().padStart(2, "0")}`;
                                 const dayIndex = date.getDay();
                                 const dayKey = daysOfWeek[dayIndex].key;
-                                const isSelectable = isInRange && selectedDays.includes(dayKey);
+                                const isSelectable = isInRange && selectedDays.includes(dayKey) && !isPast;
                                 const isSelected = selectedDates.some(item => item.date === dateString);
                                 const isCurrentMonth = date.getMonth() === currentMonth;
 
