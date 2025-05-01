@@ -61,8 +61,7 @@ DATABASES = {
         'HOST': os.getenv('DB_HOST'),
         'PORT': os.getenv('DB_PORT'),
         'OPTIONS': {
-            'sslmode': 'verify-full',
-            'sslrootcert': '/home/ubuntu/meeting-scheduler/rds-ca-bundle.pem',
+            'sslmode': 'disable',  # Disable SSL for local development
         },
     }
 }

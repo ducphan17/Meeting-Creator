@@ -2,7 +2,6 @@
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { motion } from "framer-motion";
-import DatePicker, { DatePickerProps } from "react-datepicker";
 
 // Define the days of the week
 const daysOfWeek = [
@@ -27,7 +26,7 @@ const convertToMinutes = (time: string) => {
     } else if (period === "AM" && hour === 12) {
         hour = 0;
     }
-    return hour * 60 + minute; // Convert to minutes for comparison
+    return hour * 60 + minute;
 };
 
 // Utility function to convert 12-hour time to 24-hour format
@@ -50,64 +49,55 @@ const formatTo12Hour = (time: string) => {
     return `${hour12}:${minute.toString().padStart(2, "0")} ${period}`;
 };
 
-// Custom styles for react-datepicker
-const calendarStyles = `
-    .react-datepicker {
-        font-family: Arial, sans-serif;
-        border: 1px solid #ccc;
-        border-radius: 8px;
-        width: 100%;
-        max-width: 600px; /* Increase the overall width */
-        background-color: #fff;
+// Utility function to normalize a date to midnight in local timezone
+const normalizeDate = (date: Date) => {
+    return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+};
+
+// Generate calendar days for a given month and year
+const generateCalendarDays = (year: number, month: number) => {
+    const firstDayOfMonth = new Date(year, month, 1);
+    const lastDayOfMonth = new Date(year, month + 1, 0);
+    const days: { date: Date; isInRange: boolean }[] = [];
+
+    // Add padding days before the first day of the month
+    const firstDayIndex = firstDayOfMonth.getDay();
+    for (let i = 0; i < firstDayIndex; i++) {
+        const date = new Date(year, month, 1 - (firstDayIndex - i));
+        days.push({ date, isInRange: false });
     }
-    .react-datepicker__header {
-        background-color: #f0f0f0;
-        border-bottom: 1px solid #ccc;
-        padding: 15px 0; /* Increase header padding */
-        font-size: 1.2rem; /* Increase header font size */
+
+    // Add days of the month
+    for (let day = 1; day <= lastDayOfMonth.getDate(); day++) {
+        const date = new Date(year, month, day);
+        const minDate = new Date(2025, 3, 27); // April 27, 2025
+        const maxDate = new Date(2025, 4, 26); // May 26, 2025
+        const isInRange = date >= minDate && date <= maxDate;
+        days.push({ date, isInRange });
     }
-    .react-datepicker__navigation {
-        top: 15px; /* Adjust navigation button position */
+
+    // Add padding days after the last day of the month to fill the grid
+    const lastDayIndex = lastDayOfMonth.getDay();
+    const remainingDays = (7 - (lastDayIndex + 1)) % 7;
+    for (let i = 1; i <= remainingDays; i++) {
+        const date = new Date(year, month + 1, i);
+        days.push({ date, isInRange: false });
     }
-    .react-datepicker__navigation--previous {
-        left: 15px;
-    }
-    .react-datepicker__navigation--next {
-        right: 15px;
-    }
-    .react-datepicker__month {
-        margin: 10px; /* Increase margin around the month */
-    }
-    .react-datepicker__day-name,
-    .react-datepicker__day {
-        width: 3rem; /* Increase the size of day cells */
-        height: 3rem;
-        line-height: 3rem;
-        font-size: 1.2rem; /* Increase font size of days */
-        margin: 0.2rem; /* Adjust spacing between days */
-    }
-    .react-datepicker__day--selected,
-    .react-datepicker__day--keyboard-selected {
-        background-color: #007bff; /* Highlight color for selected days */
-        color: white;
-        border-radius: 50%;
-    }
-    .react-datepicker__day--disabled {
-        color: #ccc;
-        cursor: not-allowed;
-    }
-`;
+
+    return days;
+};
 
 export default function Availability() {
     const router = useRouter();
     const [eventId, setEventId] = useState("");
     const [eventName, setEventName] = useState("");
     const [username, setUsername] = useState("");
-    const [selectedDays, setSelectedDays] = useState<string[]>([]); // e.g., ["Su", "M", "T"]
-    const [selectedDates, setSelectedDates] = useState<{ date: string; dayIndex: number }[]>([]); // e.g., [{ date: "2025-05-17", dayIndex: 6 }]
+    const [selectedDays, setSelectedDays] = useState<string[]>([]);
+    const [selectedDates, setSelectedDates] = useState<{ date: string; dayIndex: number }[]>([]);
     const [availability, setAvailability] = useState<{ [date: string]: { start: string; end: string } }>({});
     const [groupAvailability, setGroupAvailability] = useState<{ date: string; slots: GroupAvailabilitySlot[] }[]>([]);
-    const [error, setError] = useState(""); // Add error state for validation messages
+    const [error, setError] = useState("");
+    const [currentMonth, setCurrentMonth] = useState(3); // Start with April 2025 (month is 0-based)
 
     // Load event details from localStorage
     useEffect(() => {
@@ -159,12 +149,14 @@ export default function Availability() {
     }, [eventId]);
 
     const toggleDateSelection = (date: Date) => {
-        // Convert date to UTC string to ensure consistency
-        const dateString = date.toISOString().split("T")[0];
-        const dayIndex = date.getUTCDay(); // Use UTC day to match dateString
+        const year = date.getFullYear();
+        const month = date.getMonth() + 1;
+        const day = date.getDate();
+        const dateString = `${year}-${month.toString().padStart(2, "0")}-${day.toString().padStart(2, "0")}`;
+        const dayIndex = date.getDay();
 
         const dayKey = daysOfWeek[dayIndex].key;
-        if (!selectedDays.includes(dayKey)) return; // Only allow selection for event days
+        if (!selectedDays.includes(dayKey)) return;
 
         setSelectedDates(prev => {
             const existingDate = prev.find(item => item.date === dateString);
@@ -200,9 +192,8 @@ export default function Availability() {
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
-        setError(""); // Reset error message
+        setError("");
 
-        // Validate time ranges for each selected date
         for (const { date } of selectedDates) {
             const entry = availability[date];
             if (!entry) continue;
@@ -218,7 +209,6 @@ export default function Availability() {
         }
 
         try {
-            // Submit availability for each selected date
             for (const { date } of selectedDates) {
                 const entry = availability[date];
                 if (!entry) continue;
@@ -249,7 +239,6 @@ export default function Availability() {
                 }
             }
 
-            // Refresh group availability
             const fetchGroupAvailability = async () => {
                 try {
                     const response = await fetch(`http://18.188.250.248:8000/events/${eventId}/overlap/`);
@@ -281,7 +270,6 @@ export default function Availability() {
             fetchGroupAvailability();
 
             alert("Availability submitted successfully!");
-            // Stay on the page to see updated group availability
         } catch (error: unknown) {
             const errorMessage = error instanceof Error ? error.message : String(error);
             setError(`Failed to submit availability: ${errorMessage}`);
@@ -292,57 +280,119 @@ export default function Availability() {
         router.push("/");
     };
 
+    const handlePreviousMonth = () => {
+        if (currentMonth > 3) { // April is the earliest month
+            setCurrentMonth(prev => prev - 1);
+        }
+    };
+
+    const handleNextMonth = () => {
+        if (currentMonth < 4) { // May is the latest month
+            setCurrentMonth(prev => prev + 1);
+        }
+    };
+
+    const calendarDays = generateCalendarDays(2025, currentMonth);
+    const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+
     return (
-        <main className="flex min-h-screen flex-col items-center justify-center p-4 bg-gradient-to-b from-purple-900 to-purple-950">
-            <style>{calendarStyles}</style>
+        <main className="flex min-h-screen flex-col items-center justify-center p-6 bg-gradient-to-br from-indigo-900 via-purple-900 to-violet-950">
             <motion.div
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ duration: 0.5 }}
-                className="w-full max-w-4xl"
+                className="w-full max-w-5xl"
             >
-                <h1 className="text-3xl font-bold text-center mb-4 text-white">
-                    Set Your Availability for {eventName}
+                <h1 className="text-4xl font-bold text-center mb-6 text-white tracking-tight">
+                    Set Your Availability for <span className="text-indigo-300">{eventName}</span>
                 </h1>
-                <div className="bg-purple-900/50 rounded-3xl p-8 shadow-xl">
-                    <h2 className="text-xl font-semibold text-white mb-4">Select Dates</h2>
-                    <DatePicker
-                        inline
-                        selected={null}
-                        onChange={(date: Date) => toggleDateSelection(date)}
-                        highlightDates={selectedDates.map(item => {
-                            const [year, month, day] = item.date.split("-").map(Number);
-                            return new Date(Date.UTC(year, month - 1, day));
-                        })}
-                        filterDate={(date: Date) => {
-                            const dayIndex = date.getUTCDay(); // Use UTC day to match dateString
-                            const dayKey = daysOfWeek[dayIndex].key;
-                            return selectedDays.includes(dayKey);
-                        }}
-                        minDate={new Date(2025, 3, 27)} // April 27, 2025
-                        maxDate={new Date(2025, 4, 26)} // May 26, 2025
-                        className="react-datepicker-custom"
-                    />
+                <div className="bg-white/10 backdrop-blur-lg rounded-2xl p-8 shadow-2xl border border-white/20">
+                    <h2 className="text-2xl font-semibold text-white mb-6">Select Dates</h2>
+                    <div className="mb-6">
+                        <div className="flex items-center justify-between mb-4">
+                            <button
+                                onClick={handlePreviousMonth}
+                                disabled={currentMonth === 3}
+                                className={`text-white p-2 rounded-full hover:bg-white/20 transition-all ${
+                                    currentMonth === 3 ? "opacity-50 cursor-not-allowed" : ""
+                                }`}
+                            >
+                                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 19l-7-7 7-7" />
+                                </svg>
+                            </button>
+                            <h3 className="text-xl font-medium text-white">
+                                {monthNames[currentMonth]} 2025
+                            </h3>
+                            <button
+                                onClick={handleNextMonth}
+                                disabled={currentMonth === 4}
+                                className={`text-white p-2 rounded-full hover:bg-white/20 transition-all ${
+                                    currentMonth === 4 ? "opacity-50 cursor-not-allowed" : ""
+                                }`}
+                            >
+                                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 5l7 7-7 7" />
+                                </svg>
+                            </button>
+                        </div>
+                        <div className="grid grid-cols-7 gap-1">
+                            {daysOfWeek.map(day => (
+                                <div key={day.key} className="text-center text-sm font-medium text-gray-300">
+                                    {day.key}
+                                </div>
+                            ))}
+                            {calendarDays.map(({ date, isInRange }, index) => {
+                                const year = date.getFullYear();
+                                const month = date.getMonth() + 1;
+                                const day = date.getDate();
+                                const dateString = `${year}-${month.toString().padStart(2, "0")}-${day.toString().padStart(2, "0")}`;
+                                const dayIndex = date.getDay();
+                                const dayKey = daysOfWeek[dayIndex].key;
+                                const isSelectable = isInRange && selectedDays.includes(dayKey);
+                                const isSelected = selectedDates.some(item => item.date === dateString);
+                                const isCurrentMonth = date.getMonth() === currentMonth;
+
+                                return (
+                                    <button
+                                        key={index}
+                                        onClick={() => isSelectable && toggleDateSelection(date)}
+                                        disabled={!isSelectable}
+                                        className={`p-2 text-center rounded-lg transition-all duration-200 ${
+                                            isCurrentMonth
+                                                ? isSelectable
+                                                    ? isSelected
+                                                        ? "bg-indigo-500 text-white shadow-lg"
+                                                        : "bg-white/10 text-white hover:bg-indigo-400 hover:text-white"
+                                                    : "bg-white/5 text-gray-500 cursor-not-allowed"
+                                                : "bg-transparent text-gray-600"
+                                        }`}
+                                    >
+                                        {day}
+                                    </button>
+                                );
+                            })}
+                        </div>
+                    </div>
 
                     {selectedDates.length > 0 && (
                         <>
-                            <h2 className="text-xl font-semibold text-white mb-4">Set Times</h2>
+                            <h2 className="text-2xl font-semibold text-white mb-6">Set Times</h2>
                             {error && (
                                 <p className="text-red-400 text-center mb-4">{error}</p>
                             )}
                             <form onSubmit={handleSubmit} className="space-y-4 mb-8">
                                 {selectedDates.map(({ date, dayIndex }) => {
                                     const entry = availability[date] || { start: "7:00 AM", end: "8:00 AM" };
-                                    console.log(`Set Times - Date: ${date}, Day Index: ${dayIndex}, Day: ${daysOfWeek[dayIndex].full}`);
                                     return (
-                                        <div key={date} className="flex items-center gap-4">
-                                            <div className="w-20 text-white">
+                                        <div key={date} className="flex items-center gap-4 bg-white/5 p-4 rounded-lg">
+                                            <div className="w-32 text-white font-medium">
                                                 {daysOfWeek[dayIndex].full} ({date})
                                             </div>
                                             <select
                                                 value={entry.start}
                                                 onChange={(e) => updateAvailability(date, "start", e.target.value)}
-                                                className="bg-purple-800 border border-purple-700/50 rounded-full px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-purple-500"
+                                                className="bg-indigo-800 border border-indigo-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400 transition-all"
                                             >
                                                 {Array.from({ length: 17 }, (_, i) => {
                                                     const hour = i + 7;
@@ -351,18 +401,18 @@ export default function Availability() {
                                                         <option
                                                             key={time}
                                                             value={time}
-                                                            className="bg-purple-800 text-white"
+                                                            className="bg-indigo-800 text-white"
                                                         >
                                                             {time}
                                                         </option>
                                                     );
                                                 })}
                                             </select>
-                                            <span className="text-white">-</span>
+                                            <span className="text-white font-bold">-</span>
                                             <select
                                                 value={entry.end}
                                                 onChange={(e) => updateAvailability(date, "end", e.target.value)}
-                                                className="bg-purple-800 border border-purple-700/50 rounded-full px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-purple-500"
+                                                className="bg-indigo-800 border border-indigo-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400 transition-all"
                                             >
                                                 {Array.from({ length: 17 }, (_, i) => {
                                                     const hour = i + 7;
@@ -371,7 +421,7 @@ export default function Availability() {
                                                         <option
                                                             key={time}
                                                             value={time}
-                                                            className="bg-purple-800 text-white"
+                                                            className="bg-indigo-800 text-white"
                                                         >
                                                             {time}
                                                         </option>
@@ -383,19 +433,19 @@ export default function Availability() {
                                 })}
                                 <div className="flex gap-4">
                                     <motion.button
-                                        whileHover={{ scale: 1.03 }}
-                                        whileTap={{ scale: 0.97 }}
+                                        whileHover={{ scale: 1.05 }}
+                                        whileTap={{ scale: 0.95 }}
                                         type="submit"
-                                        className="gradient-button text-white font-semibold py-3 px-12 rounded-full text-lg w-full"
+                                        className="bg-gradient-to-r from-indigo-500 to-purple-600 text-white font-semibold py-3 px-8 rounded-lg text-lg w-full shadow-lg hover:from-indigo-600 hover:to-purple-700 transition-all"
                                     >
                                         Submit Availability
                                     </motion.button>
                                     <motion.button
-                                        whileHover={{ scale: 1.03 }}
-                                        whileTap={{ scale: 0.97 }}
+                                        whileHover={{ scale: 1.05 }}
+                                        whileTap={{ scale: 0.95 }}
                                         type="button"
                                         onClick={handleDone}
-                                        className="gradient-button text-white font-semibold py-3 px-12 rounded-full text-lg w-full"
+                                        className="bg-gradient-to-r from-gray-500 to-gray-600 text-white font-semibold py-3 px-8 rounded-lg text-lg w-full shadow-lg hover:from-gray-600 hover:to-gray-700 transition-all"
                                     >
                                         Done
                                     </motion.button>
@@ -404,20 +454,20 @@ export default function Availability() {
                         </>
                     )}
 
-                    <h2 className="text-xl font-semibold text-white mb-4">Group Availability</h2>
-                    <div className="space-y-2">
+                    <h2 className="text-2xl font-semibold text-white mb-6">Group Availability</h2>
+                    <div className="space-y-4">
                         {groupAvailability.map(({ date, slots }) => (
-                            <div key={date} className="flex flex-col gap-2">
-                                <div className="text-white">{date}</div>
+                            <div key={date} className="flex flex-col gap-2 bg-white/5 p-4 rounded-lg">
+                                <div className="text-white font-medium">{date}</div>
                                 <div className="ml-4 flex flex-wrap gap-2">
                                     {slots.map(([slot, count], index) => (
                                         <span
                                             key={index}
-                                            className={`px-3 py-1 rounded-full text-white ${
+                                            className={`px-4 py-1 rounded-full text-white text-sm font-medium ${
                                                 count >= 3 ? "bg-red-500" :
                                                 count === 2 ? "bg-orange-500" :
                                                 count === 1 ? "bg-yellow-500" :
-                                                "bg-purple-700"
+                                                "bg-indigo-600"
                                             }`}
                                         >
                                             {slot.split(" ")[1]}-{slot.split("-")[1]} ({count} user{count !== 1 ? "s" : ""})
