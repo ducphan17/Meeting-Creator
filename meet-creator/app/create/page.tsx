@@ -58,7 +58,7 @@ export default function CreateEvent() {
         };
 
         try {
-            const response = await fetch("http://18.188.250.248:8000/events/", {
+            const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/events/`, {
                 method: "POST",
                 headers: {
                     "Content-Type": "application/json",

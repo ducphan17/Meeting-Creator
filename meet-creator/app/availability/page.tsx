@@ -130,7 +130,7 @@ export default function Availability() {
         if (eventId) {
             const fetchGroupAvailability = async () => {
                 try {
-                    const response = await fetch(`http://18.188.250.248:8000/events/${eventId}/overlap/`);
+                    const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/events/${eventId}/overlap/`);
                     if (!response.ok) {
                         throw new Error(`Failed to fetch group availability: ${response.statusText}`);
                     }
@@ -237,7 +237,7 @@ export default function Availability() {
 
                 console.log("Submitting availability:", availabilityData);
 
-                const response = await fetch("http://18.188.250.248:8000/availabilities/", {
+                const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/availabilities/`, {
                     method: "POST",
                     headers: {
                         "Content-Type": "application/json",
@@ -253,7 +253,7 @@ export default function Availability() {
 
             const fetchGroupAvailability = async () => {
                 try {
-                    const response = await fetch(`http://18.188.250.248:8000/events/${eventId}/overlap/`);
+                    const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/events/${eventId}/overlap/`);
                     if (!response.ok) {
                         throw new Error(`Failed to fetch group availability: ${response.statusText}`);
                     }
