@@ -8,6 +8,16 @@ class Event(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     participants = models.ManyToManyField(User, related_name='participating_events', blank=True)
 
+    # Which days of the week / date range / time-of-day window are valid for
+    # setting availability on this event. These used to live only in the
+    # creator's browser localStorage, which meant anyone who joined from a
+    # different browser had no idea what days/times were selectable.
+    selected_days = models.JSONField(default=list, blank=True)
+    start_date = models.DateField(null=True, blank=True)
+    end_date = models.DateField(null=True, blank=True)
+    from_time = models.TimeField(null=True, blank=True)
+    to_time = models.TimeField(null=True, blank=True)
+
     class Meta:
         db_table = 'events'
 

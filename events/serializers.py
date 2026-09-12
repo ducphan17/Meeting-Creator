@@ -21,8 +21,17 @@ class EventSerializer(serializers.ModelSerializer):
     participants = UserSerializer(many=True, read_only=True)
     availabilities = AvailabilitySerializer(many=True, read_only=True)
     username = serializers.CharField(write_only=True)
+    selected_days = serializers.JSONField(required=False)
+    start_date = serializers.DateField(required=False, allow_null=True)
+    end_date = serializers.DateField(required=False, allow_null=True)
+    from_time = serializers.TimeField(required=False, allow_null=True)
+    to_time = serializers.TimeField(required=False, allow_null=True)
 
     class Meta:
         model = Event
-        fields = ['id', 'title', 'creator', 'passcode', 'created_at', 'participants', 'availabilities', 'username']
+        fields = [
+            'id', 'title', 'creator', 'passcode', 'created_at', 'participants',
+            'availabilities', 'username',
+            'selected_days', 'start_date', 'end_date', 'from_time', 'to_time',
+        ]
         read_only_fields = ['id', 'creator', 'created_at', 'participants', 'availabilities']

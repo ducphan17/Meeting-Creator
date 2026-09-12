@@ -11,3 +11,19 @@ static/
 nohup.out
 rds-ca-bundle.pem
 CS_3354_Deliverable_01/
+
+# Environment / secrets - never commit real values, see .env.example
+.env
+.env.*
+!.env.example
+
+# Node (the actual frontend app lives in meet-creator/, which has its own
+# .gitignore covering its own node_modules; this repo root previously had a
+# stray, unused package.json + node_modules for react-datepicker that never
+# got imported anywhere - removed, and ignored here so it can't come back
+# by accident)
+node_modules/
+
+# Editor/OS cruft and stray dev artifacts
+cookies.txt
+.DS_Store
