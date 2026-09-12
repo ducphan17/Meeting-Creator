@@ -69,7 +69,14 @@ DATABASES = {
 STATIC_URL = '/static/'
 STATIC_ROOT = BASE_DIR / 'static'
 
-CORS_ALLOWED_ORIGINS = [
+_DEFAULT_CORS_ORIGINS = [
     "http://localhost:3000",
+    "http://127.0.0.1:3000",
     "http://18.188.250.248:3000",
+]
+_extra_cors_origins = [
+    origin.strip() for origin in os.getenv("CORS_ALLOWED_ORIGINS", "").split(",") if origin.strip()
+]
+CORS_ALLOWED_ORIGINS = _DEFAULT_CORS_ORIGINS + [
+    origin for origin in _extra_cors_origins if origin not in _DEFAULT_CORS_ORIGINS
 ]

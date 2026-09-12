@@ -4,28 +4,16 @@ import type React from "react";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { motion } from "framer-motion";
+import { daysOfWeek, convertTo24Hour, formatDateLocal } from "../lib/time";
+import { createEvent } from "../lib/api";
+import { saveEventSession } from "../lib/eventSession";
 
-const daysOfWeek = [
-    { key: "Su", full: "Sunday" },
-    { key: "M", full: "Monday" },
-    { key: "T", full: "Tuesday" },
-    { key: "W", full: "Wednesday" },
-    { key: "Th", full: "Thursday" },
-    { key: "F", full: "Friday" },
-    { key: "Sa", full: "Saturday" },
-];
-
-// Utility function to convert 12-hour time to 24-hour format for backend
-const convertTo24Hour = (time: string) => {
-    const [hourMinute, period] = time.split(" ");
-    let [hour, minute] = hourMinute.split(":").map(Number);
-    if (period === "PM" && hour !== 12) {
-        hour += 12;
-    } else if (period === "AM" && hour === 12) {
-        hour = 0;
-    }
-    return `${hour.toString().padStart(2, "0")}:${minute.toString().padStart(2, "0")}:00`;
-};
+// How many days out the availability window defaults to when creating an
+// event. There's no date-range picker in this UI (yet), so this replaces
+// what used to be a hardcoded "April 27 - June 30, 2025" window baked into
+// availability/page.tsx - a window that was already in the past for
+// anyone using the app after mid-2025.
+const DEFAULT_WINDOW_DAYS = 56; // 8 weeks
 
 export default function CreateEvent() {
     const router = useRouter();
@@ -35,6 +23,16 @@ export default function CreateEvent() {
     const [selectedDays, setSelectedDays] = useState<number[]>([0, 4, 5, 6]); // Default to Su, Th, F, Sa
     const [fromTime, setFromTime] = useState("7:00 AM");
     const [toTime, setToTime] = useState("10:00 PM");
+    const [submitting, setSubmitting] = useState(false);
+
+    // Set once the event is created, so we can show the creator their
+    // Event ID / join link before sending them on to set their own
+    // availability. Previously the app redirected immediately, and the
+    // creator had no way to find out the Event ID needed to invite anyone.
+    const [createdEvent, setCreatedEvent] = useState<{
+        id: number;
+        joinUrl: string;
+    } | null>(null);
 
     const handleDayToggle = (index: number) => {
         if (selectedDays.includes(index)) {
@@ -46,50 +44,118 @@ export default function CreateEvent() {
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
+        setSubmitting(true);
 
-        // Prepare the event data to send to the backend
-        const eventData = {
-            title: eventName,
-            passcode: passcode,
-            username: username,
-            selectedDays: selectedDays.map(index => daysOfWeek[index].key),
-            start_time: fromTime,
-            end_time: toTime,
-        };
+        const today = new Date();
+        const endDate = new Date(today);
+        endDate.setDate(endDate.getDate() + DEFAULT_WINDOW_DAYS);
+
+        const startDateStr = formatDateLocal(today);
+        const endDateStr = formatDateLocal(endDate);
+        const selectedDayKeys = selectedDays.map((index) => daysOfWeek[index].key);
 
         try {
-            const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/events/`, {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json",
-                },
-                body: JSON.stringify(eventData),
+            const result = await createEvent({
+                title: eventName,
+                passcode,
+                username,
+                selected_days: selectedDayKeys,
+                start_date: startDateStr,
+                end_date: endDateStr,
+                from_time: convertTo24Hour(fromTime),
+                to_time: convertTo24Hour(toTime),
             });
 
-            if (!response.ok) {
-                throw new Error(`HTTP error! status: ${response.status}`);
-            }
-
-            const result = await response.json();
-            console.log("Event created:", result);
-
-            localStorage.setItem("eventData", JSON.stringify({
-                eventId: result.id,
+            saveEventSession({
+                eventId: String(result.id),
                 eventName,
                 username,
-                passcode,
-                selectedDays: selectedDays.map(index => daysOfWeek[index].key),
+                selectedDays: selectedDayKeys,
+                startDate: startDateStr,
+                endDate: endDateStr,
                 fromTime,
                 toTime,
-            }));
+            });
 
-            router.push("/availability");
+            const joinUrl = `${window.location.origin}/join?eventId=${result.id}`;
+            setCreatedEvent({ id: result.id, joinUrl });
         } catch (error: unknown) {
             const errorMessage = error instanceof Error ? error.message : String(error);
             console.error("Error creating event:", errorMessage);
             alert("Failed to create event. Please try again.");
+        } finally {
+            setSubmitting(false);
         }
     };
+
+    const handleCopyLink = async () => {
+        if (!createdEvent) return;
+        try {
+            await navigator.clipboard.writeText(createdEvent.joinUrl);
+            alert("Join link copied to clipboard!");
+        } catch {
+            // Clipboard API can be unavailable (e.g. insecure context) -
+            // the link is still shown on screen for manual copying.
+        }
+    };
+
+    if (createdEvent) {
+        return (
+            <main className="flex min-h-screen flex-col items-center justify-center p-4 bg-gradient-to-b from-purple-900 to-purple-950">
+                <motion.div
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ duration: 0.5 }}
+                    className="w-full max-w-lg"
+                >
+                    <h1 className="text-3xl font-bold text-center mb-8 text-white">
+                        Event Created!
+                    </h1>
+                    <div className="bg-purple-900/50 rounded-3xl p-8 shadow-xl text-center space-y-6">
+                        <p className="text-white/80">
+                            Share this Event ID and the passcode with anyone you want to
+                            invite. They&apos;ll need both to join.
+                        </p>
+                        <div className="bg-purple-800/60 rounded-2xl py-4">
+                            <div className="text-sm text-purple-200 uppercase tracking-wide">
+                                Event ID
+                            </div>
+                            <div className="text-4xl font-bold text-white">
+                                {createdEvent.id}
+                            </div>
+                        </div>
+                        <div className="text-left">
+                            <label className="text-white/80 text-sm mb-1 block">
+                                Join link
+                            </label>
+                            <div className="flex gap-2">
+                                <input
+                                    readOnly
+                                    value={createdEvent.joinUrl}
+                                    className="flex-1 bg-transparent border border-purple-700/50 rounded-full px-4 py-2 text-white text-sm"
+                                />
+                                <button
+                                    type="button"
+                                    onClick={handleCopyLink}
+                                    className="gradient-button text-white font-semibold px-5 rounded-full text-sm"
+                                >
+                                    Copy
+                                </button>
+                            </div>
+                        </div>
+                        <motion.button
+                            whileHover={{ scale: 1.03 }}
+                            whileTap={{ scale: 0.97 }}
+                            onClick={() => router.push("/availability")}
+                            className="gradient-button text-white font-semibold py-3 px-12 rounded-full text-lg w-full"
+                        >
+                            Continue to Set My Availability
+                        </motion.button>
+                    </div>
+                </motion.div>
+            </main>
+        );
+    }
 
     return (
         <main className="flex min-h-screen flex-col items-center justify-center p-4 bg-gradient-to-b from-purple-900 to-purple-950">
@@ -218,9 +284,10 @@ export default function CreateEvent() {
                                 whileHover={{ scale: 1.03 }}
                                 whileTap={{ scale: 0.97 }}
                                 type="submit"
-                                className="gradient-button text-white font-semibold py-3 px-12 rounded-full text-lg w-full max-w-md"
+                                disabled={submitting}
+                                className="gradient-button text-white font-semibold py-3 px-12 rounded-full text-lg w-full max-w-md disabled:opacity-60"
                             >
-                                Create
+                                {submitting ? "Creating..." : "Create"}
                             </motion.button>
                         </div>
                     </form>

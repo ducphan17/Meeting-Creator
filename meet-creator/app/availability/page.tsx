@@ -1,64 +1,26 @@
 "use client";
-import { useState, useEffect } from "react";
+import type React from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { motion } from "framer-motion";
-
-// Define the days of the week
-const daysOfWeek = [
-    { key: "Su", full: "Sunday", index: 0 },
-    { key: "M", full: "Monday", index: 1 },
-    { key: "T", full: "Tuesday", index: 2 },
-    { key: "W", full: "Wednesday", index: 3 },
-    { key: "Th", full: "Thursday", index: 4 },
-    { key: "F", full: "Friday", index: 5 },
-    { key: "Sa", full: "Saturday", index: 6 },
-];
-
-// Type for group availability slots
-type GroupAvailabilitySlot = [string, number];
-
-// Utility function to convert 12-hour time to minutes for comparison
-const convertToMinutes = (time: string) => {
-    const [hourMinute, period] = time.split(" ");
-    let [hour, minute] = hourMinute.split(":").map(Number);
-    if (period === "PM" && hour !== 12) {
-        hour += 12;
-    } else if (period === "AM" && hour === 12) {
-        hour = 0;
-    }
-    return hour * 60 + minute;
-};
-
-// Utility function to convert 12-hour time to 24-hour format
-const convertTo24Hour = (time: string) => {
-    const [hourMinute, period] = time.split(" ");
-    let [hour, minute] = hourMinute.split(":").map(Number);
-    if (period === "PM" && hour !== 12) {
-        hour += 12;
-    } else if (period === "AM" && hour === 12) {
-        hour = 0;
-    }
-    return `${hour.toString().padStart(2, "0")}:${minute.toString().padStart(2, "0")}:00`;
-};
-
-// Utility function to format 24-hour time to 12-hour format
-const formatTo12Hour = (time: string) => {
-    const [hour, minute] = time.split(":").map(Number);
-    const period = hour >= 12 ? "PM" : "AM";
-    const hour12 = hour % 12 || 12;
-    return `${hour12}:${minute.toString().padStart(2, "0")} ${period}`;
-};
+import { daysOfWeek, convertToMinutes, convertTo24Hour, formatDateLocal, parseDateLocal } from "../lib/time";
+import { fetchEvent, submitAvailability, fetchGroupAvailability, type GroupAvailabilityDay } from "../lib/api";
+import { loadEventSession, saveEventSession } from "../lib/eventSession";
 
 // Utility function to normalize a date to midnight in local timezone
 const normalizeDate = (date: Date) => {
     return new Date(date.getFullYear(), date.getMonth(), date.getDate());
 };
 
-// Generate calendar days for a given month and year
-const generateCalendarDays = (year: number, month: number) => {
+// Generate calendar days for a given month and year, restricted to the
+// event's own [minDate, maxDate] window (previously this range was
+// hardcoded to April 27 - June 30, 2025, which meant the calendar had no
+// selectable days at all for anyone using the app after that window
+// passed).
+const generateCalendarDays = (year: number, month: number, minDate: Date, maxDate: Date) => {
     const firstDayOfMonth = new Date(year, month, 1);
     const lastDayOfMonth = new Date(year, month + 1, 0);
-    const today = normalizeDate(new Date()); // Normalize today's date to midnight
+    const today = normalizeDate(new Date());
     const days: { date: Date; isInRange: boolean; isPast: boolean }[] = [];
 
     // Add padding days before the first day of the month
@@ -72,8 +34,6 @@ const generateCalendarDays = (year: number, month: number) => {
     // Add days of the month
     for (let day = 1; day <= lastDayOfMonth.getDate(); day++) {
         const date = new Date(year, month, day);
-        const minDate = new Date(2025, 3, 27); // April 27, 2025
-        const maxDate = new Date(2025, 5, 30); // June 30, 2025
         const isInRange = date >= minDate && date <= maxDate;
         const isPast = normalizeDate(date) < today;
         days.push({ date, isInRange, isPast });
@@ -91,80 +51,92 @@ const generateCalendarDays = (year: number, month: number) => {
     return days;
 };
 
+// Add `delta` months to a {year, month} pair, handling year rollover in
+// both directions (the old code assumed a single hardcoded year and broke
+// when navigating across a year boundary).
+const addMonths = (year: number, month: number, delta: number) => {
+    const d = new Date(year, month + delta, 1);
+    return { year: d.getFullYear(), month: d.getMonth() };
+};
+
+const monthDiff = (a: { year: number; month: number }, b: { year: number; month: number }) =>
+    (b.year - a.year) * 12 + (b.month - a.month);
+
 export default function Availability() {
     const router = useRouter();
     const [eventId, setEventId] = useState("");
     const [eventName, setEventName] = useState("");
     const [username, setUsername] = useState("");
     const [selectedDays, setSelectedDays] = useState<string[]>([]);
+    const [minDate, setMinDate] = useState<Date | null>(null);
+    const [maxDate, setMaxDate] = useState<Date | null>(null);
+    const [loadError, setLoadError] = useState("");
     const [selectedDates, setSelectedDates] = useState<{ date: string; dayIndex: number }[]>([]);
     const [availability, setAvailability] = useState<{ [date: string]: { start: string; end: string } }>({});
-    const [groupAvailability, setGroupAvailability] = useState<{ date: string; slots: GroupAvailabilitySlot[] }[]>([]);
+    const [groupAvailability, setGroupAvailability] = useState<GroupAvailabilityDay[]>([]);
     const [error, setError] = useState("");
+    const [monthOffset, setMonthOffset] = useState(0);
 
-    // Determine the current month dynamically based on today's date
-    const today = new Date(); // Current date: May 1, 2025
-    const currentYear = today.getFullYear();
-    const currentMonthIndex = today.getMonth(); // 0-based month (May is 4)
-    const [currentMonth, setCurrentMonth] = useState(currentMonthIndex); // Start with current month (May 2025)
-
-    // Define the months to display: current month and next month
-    const monthsToDisplay = [currentMonthIndex, currentMonthIndex + 1].filter(month => month <= 5); // Filter to not exceed June (month 5)
-
-    // Load event details from localStorage
+    // Load "who am I / which event" from this browser's session, then get
+    // the authoritative event config (name, selectable days, date window)
+    // from the backend. Previously the *creator's* selectedDays/eventName
+    // lived only in localStorage, so anyone who joined from a different
+    // browser had no idea what days were even selectable, and their own
+    // localStorage might not have an "eventData" entry at all.
     useEffect(() => {
-        const storedEventData = localStorage.getItem("eventData");
-        if (storedEventData) {
-            const eventData = JSON.parse(storedEventData);
-            setEventId(eventData.eventId);
-            setEventName(eventData.eventName);
-            setUsername(eventData.username || "");
-            setSelectedDays(eventData.selectedDays || []);
-        } else {
+        const session = loadEventSession();
+        if (!session || !session.eventId) {
             router.push("/create");
+            return;
         }
+        setEventId(session.eventId);
+        setEventName(session.eventName);
+        setUsername(session.username || "");
+        setSelectedDays(session.selectedDays || []);
+
+        fetchEvent(session.eventId)
+            .then((event) => {
+                setEventName(event.title);
+                setSelectedDays(event.selected_days || []);
+
+                const start = event.start_date ? parseDateLocal(event.start_date) : new Date();
+                const end = event.end_date
+                    ? parseDateLocal(event.end_date)
+                    : new Date(start.getFullYear(), start.getMonth(), start.getDate() + 56);
+                setMinDate(normalizeDate(start));
+                setMaxDate(normalizeDate(end));
+
+                saveEventSession({
+                    ...session,
+                    eventName: event.title,
+                    selectedDays: event.selected_days || [],
+                    startDate: event.start_date ?? session.startDate,
+                    endDate: event.end_date ?? session.endDate,
+                });
+            })
+            .catch((err: unknown) => {
+                const message = err instanceof Error ? err.message : String(err);
+                setLoadError(`Could not load this event: ${message}`);
+            });
     }, [router]);
 
-    // Fetch group availability
-    useEffect(() => {
-        if (eventId) {
-            const fetchGroupAvailability = async () => {
-                try {
-                    const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/events/${eventId}/overlap/`);
-                    if (!response.ok) {
-                        throw new Error(`Failed to fetch group availability: ${response.statusText}`);
-                    }
-                    const data = await response.json();
-                    const grouped: { date: string; slots: GroupAvailabilitySlot[] }[] = [];
-                    const dateMap: { [date: string]: GroupAvailabilitySlot[] } = {};
-                    data.overlap.forEach(([slot, count]: GroupAvailabilitySlot) => {
-                        const [dateTime, _] = slot.split("-");
-                        const date = dateTime.split(" ")[0];
-                        if (!dateMap[date]) {
-                            dateMap[date] = [];
-                        }
-                        dateMap[date].push([slot, count]);
-                    });
-                    Object.keys(dateMap).forEach(date => {
-                        grouped.push({ date, slots: dateMap[date] });
-                    });
-                    grouped.sort((a, b) => a.date.localeCompare(b.date));
-                    setGroupAvailability(grouped);
-                } catch (error: unknown) {
-                    const errorMessage = error instanceof Error ? error.message : String(error);
-                    console.error("Error fetching group availability:", errorMessage);
-                    alert(`Error fetching group availability: ${errorMessage}`);
-                }
-            };
-            fetchGroupAvailability();
+    const loadGroupAvailability = useCallback(async () => {
+        if (!eventId) return;
+        try {
+            const grouped = await fetchGroupAvailability(eventId);
+            setGroupAvailability(grouped);
+        } catch (err: unknown) {
+            const message = err instanceof Error ? err.message : String(err);
+            console.error("Error fetching group availability:", message);
         }
     }, [eventId]);
 
+    useEffect(() => {
+        loadGroupAvailability();
+    }, [loadGroupAvailability]);
+
     const toggleDateSelection = (date: Date) => {
-        const year = date.getFullYear();
-        const month = date.getMonth() + 1;
-        const day = date.getDate();
-        const dateString = `${year}-${month.toString().padStart(2, "0")}-${day.toString().padStart(2, "0")}`;
+        const dateString = formatDateLocal(date);
         const dayIndex = date.getDay();
 
         const dayKey = daysOfWeek[dayIndex].key;
@@ -175,14 +147,13 @@ export default function Availability() {
             if (existingDate) {
                 return prev.filter(item => item.date !== dateString);
             }
-            const newDates = [...prev, { date: dateString, dayIndex }];
-            console.log(`Toggled Date: ${dateString}, Day Index: ${dayIndex}, Day: ${daysOfWeek[dayIndex].full}, Selected Dates: ${JSON.stringify(newDates)}`);
-            return newDates;
+            return [...prev, { date: dateString, dayIndex }];
         });
 
         setAvailability(prev => {
             if (prev[dateString]) {
-                const { [dateString]: _, ...rest } = prev;
+                const rest = { ...prev };
+                delete rest[dateString];
                 return rest;
             }
             return {
@@ -228,59 +199,15 @@ export default function Availability() {
                 const startTime24 = convertTo24Hour(entry.start);
                 const endTime24 = convertTo24Hour(entry.end);
 
-                const availabilityData = {
+                await submitAvailability({
                     event: parseInt(eventId),
                     start_time: `${date}T${startTime24}`,
                     end_time: `${date}T${endTime24}`,
                     username: username,
-                };
-
-                console.log("Submitting availability:", availabilityData);
-
-                const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/availabilities/`, {
-                    method: "POST",
-                    headers: {
-                        "Content-Type": "application/json",
-                    },
-                    body: JSON.stringify(availabilityData),
                 });
-
-                if (!response.ok) {
-                    const errorData = await response.json();
-                    throw new Error(errorData.error || `HTTP error! status: ${response.status} - ${response.statusText}`);
-                }
             }
 
-            const fetchGroupAvailability = async () => {
-                try {
-                    const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/events/${eventId}/overlap/`);
-                    if (!response.ok) {
-                        throw new Error(`Failed to fetch group availability: ${response.statusText}`);
-                    }
-                    const data = await response.json();
-                    const grouped: { date: string; slots: GroupAvailabilitySlot[] }[] = [];
-                    const dateMap: { [date: string]: GroupAvailabilitySlot[] } = {};
-                    data.overlap.forEach(([slot, count]: GroupAvailabilitySlot) => {
-                        const [dateTime, _] = slot.split("-");
-                        const date = dateTime.split(" ")[0];
-                        if (!dateMap[date]) {
-                            dateMap[date] = [];
-                        }
-                        dateMap[date].push([slot, count]);
-                    });
-                    Object.keys(dateMap).forEach(date => {
-                        grouped.push({ date, slots: dateMap[date] });
-                    });
-                    grouped.sort((a, b) => a.date.localeCompare(b.date));
-                    setGroupAvailability(grouped);
-                } catch (error: unknown) {
-                    const errorMessage = error instanceof Error ? error.message : String(error);
-                    console.error("Error fetching group availability:", errorMessage);
-                    alert(`Error fetching group availability: ${errorMessage}`);
-                }
-            };
-            fetchGroupAvailability();
-
+            await loadGroupAvailability();
             alert("Availability submitted successfully!");
         } catch (error: unknown) {
             const errorMessage = error instanceof Error ? error.message : String(error);
@@ -292,20 +219,44 @@ export default function Availability() {
         router.push("/");
     };
 
+    // The visible month is expressed as an offset (in months) from the
+    // event's start month, bounded by how many months the event's window
+    // actually spans - this replaces logic that assumed a single
+    // hardcoded year (2025) and a "current vs. next month only" limit.
+    const minView = minDate ? { year: minDate.getFullYear(), month: minDate.getMonth() } : null;
+    const maxView = maxDate ? { year: maxDate.getFullYear(), month: maxDate.getMonth() } : null;
+    const totalMonths = minView && maxView ? Math.max(0, monthDiff(minView, maxView)) : 0;
+    const currentView = minView ? addMonths(minView.year, minView.month, monthOffset) : null;
+
     const handlePreviousMonth = () => {
-        if (currentMonth > currentMonthIndex) { // Don't go before the current month
-            setCurrentMonth(prev => prev - 1);
-        }
+        if (monthOffset > 0) setMonthOffset(prev => prev - 1);
     };
 
     const handleNextMonth = () => {
-        if (currentMonth < currentMonthIndex + 1) { // Only allow up to the next month
-            setCurrentMonth(prev => prev + 1);
-        }
+        if (monthOffset < totalMonths) setMonthOffset(prev => prev + 1);
     };
 
-    const calendarDays = generateCalendarDays(2025, currentMonth);
+    const calendarDays =
+        currentView && minDate && maxDate
+            ? generateCalendarDays(currentView.year, currentView.month, minDate, maxDate)
+            : [];
     const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+
+    if (loadError) {
+        return (
+            <main className="flex min-h-screen flex-col items-center justify-center p-6 bg-gradient-to-br from-indigo-900 via-purple-900 to-violet-950">
+                <div className="bg-white/10 rounded-2xl p-8 text-white text-center max-w-md">
+                    <p className="mb-4">{loadError}</p>
+                    <button
+                        onClick={() => router.push("/")}
+                        className="gradient-button text-white font-semibold py-2 px-6 rounded-full"
+                    >
+                        Back to Home
+                    </button>
+                </div>
+            </main>
+        );
+    }
 
     return (
         <main className="flex min-h-screen flex-col items-center justify-center p-6 bg-gradient-to-br from-indigo-900 via-purple-900 to-violet-950">
@@ -320,72 +271,71 @@ export default function Availability() {
                 </h1>
                 <div className="bg-white/10 backdrop-blur-lg rounded-2xl p-8 shadow-2xl border border-white/20">
                     <h2 className="text-2xl font-semibold text-white mb-6">Select Dates</h2>
-                    <div className="mb-6">
-                        <div className="flex items-center justify-between mb-4">
-                            <button
-                                onClick={handlePreviousMonth}
-                                disabled={currentMonth === currentMonthIndex}
-                                className={`text-white p-2 rounded-full hover:bg-white/20 transition-all ${
-                                    currentMonth === currentMonthIndex ? "opacity-50 cursor-not-allowed" : ""
-                                }`}
-                            >
-                                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 19l-7-7 7-7" />
-                                </svg>
-                            </button>
-                            <h3 className="text-xl font-medium text-white">
-                                {monthNames[currentMonth]} 2025
-                            </h3>
-                            <button
-                                onClick={handleNextMonth}
-                                disabled={currentMonth === currentMonthIndex + 1}
-                                className={`text-white p-2 rounded-full hover:bg-white/20 transition-all ${
-                                    currentMonth === currentMonthIndex + 1 ? "opacity-50 cursor-not-allowed" : ""
-                                }`}
-                            >
-                                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 5l7 7-7 7" />
-                                </svg>
-                            </button>
-                        </div>
-                        <div className="grid grid-cols-7 gap-1">
-                            {daysOfWeek.map(day => (
-                                <div key={day.key} className="text-center text-sm font-medium text-gray-300">
-                                    {day.key}
-                                </div>
-                            ))}
-                            {calendarDays.map(({ date, isInRange, isPast }, index) => {
-                                const year = date.getFullYear();
-                                const month = date.getMonth() + 1;
-                                const day = date.getDate();
-                                const dateString = `${year}-${month.toString().padStart(2, "0")}-${day.toString().padStart(2, "0")}`;
-                                const dayIndex = date.getDay();
-                                const dayKey = daysOfWeek[dayIndex].key;
-                                const isSelectable = isInRange && selectedDays.includes(dayKey) && !isPast;
-                                const isSelected = selectedDates.some(item => item.date === dateString);
-                                const isCurrentMonth = date.getMonth() === currentMonth;
+                    {currentView && (
+                        <div className="mb-6">
+                            <div className="flex items-center justify-between mb-4">
+                                <button
+                                    onClick={handlePreviousMonth}
+                                    disabled={monthOffset === 0}
+                                    className={`text-white p-2 rounded-full hover:bg-white/20 transition-all ${
+                                        monthOffset === 0 ? "opacity-50 cursor-not-allowed" : ""
+                                    }`}
+                                >
+                                    <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 19l-7-7 7-7" />
+                                    </svg>
+                                </button>
+                                <h3 className="text-xl font-medium text-white">
+                                    {monthNames[currentView.month]} {currentView.year}
+                                </h3>
+                                <button
+                                    onClick={handleNextMonth}
+                                    disabled={monthOffset === totalMonths}
+                                    className={`text-white p-2 rounded-full hover:bg-white/20 transition-all ${
+                                        monthOffset === totalMonths ? "opacity-50 cursor-not-allowed" : ""
+                                    }`}
+                                >
+                                    <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 5l7 7-7 7" />
+                                    </svg>
+                                </button>
+                            </div>
+                            <div className="grid grid-cols-7 gap-1">
+                                {daysOfWeek.map(day => (
+                                    <div key={day.key} className="text-center text-sm font-medium text-gray-300">
+                                        {day.key}
+                                    </div>
+                                ))}
+                                {calendarDays.map(({ date, isInRange, isPast }, index) => {
+                                    const dateString = formatDateLocal(date);
+                                    const dayIndex = date.getDay();
+                                    const dayKey = daysOfWeek[dayIndex].key;
+                                    const isSelectable = isInRange && selectedDays.includes(dayKey) && !isPast;
+                                    const isSelected = selectedDates.some(item => item.date === dateString);
+                                    const isCurrentMonth = date.getMonth() === currentView.month;
 
-                                return (
-                                    <button
-                                        key={index}
-                                        onClick={() => isSelectable && toggleDateSelection(date)}
-                                        disabled={!isSelectable}
-                                        className={`p-2 text-center rounded-lg transition-all duration-200 ${
-                                            isCurrentMonth
-                                                ? isSelectable
-                                                    ? isSelected
-                                                        ? "bg-indigo-500 text-white shadow-lg"
-                                                        : "bg-white/10 text-white hover:bg-indigo-400 hover:text-white"
-                                                    : "bg-white/5 text-gray-500 cursor-not-allowed"
-                                                : "bg-transparent text-gray-600"
-                                        }`}
-                                    >
-                                        {day}
-                                    </button>
-                                );
-                            })}
+                                    return (
+                                        <button
+                                            key={index}
+                                            onClick={() => isSelectable && toggleDateSelection(date)}
+                                            disabled={!isSelectable}
+                                            className={`p-2 text-center rounded-lg transition-all duration-200 ${
+                                                isCurrentMonth
+                                                    ? isSelectable
+                                                        ? isSelected
+                                                            ? "bg-indigo-500 text-white shadow-lg"
+                                                            : "bg-white/10 text-white hover:bg-indigo-400 hover:text-white"
+                                                        : "bg-white/5 text-gray-500 cursor-not-allowed"
+                                                    : "bg-transparent text-gray-600"
+                                            }`}
+                                        >
+                                            {date.getDate()}
+                                        </button>
+                                    );
+                                })}
+                            </div>
                         </div>
-                    </div>
+                    )}
 
                     {selectedDates.length > 0 && (
                         <>
@@ -468,11 +418,14 @@ export default function Availability() {
 
                     <h2 className="text-2xl font-semibold text-white mb-6">Group Availability</h2>
                     <div className="space-y-4">
+                        {groupAvailability.length === 0 && (
+                            <p className="text-white/60">No availability submitted yet.</p>
+                        )}
                         {groupAvailability.map(({ date, slots }) => (
                             <div key={date} className="flex flex-col gap-2 bg-white/5 p-4 rounded-lg">
                                 <div className="text-white font-medium">{date}</div>
                                 <div className="ml-4 flex flex-wrap gap-2">
-                                    {slots.map(([slot, count], index) => (
+                                    {slots.map(({ start, end, count }, index) => (
                                         <span
                                             key={index}
                                             className={`px-4 py-1 rounded-full text-white text-sm font-medium ${
@@ -482,7 +435,7 @@ export default function Availability() {
                                                 "bg-indigo-600"
                                             }`}
                                         >
-                                            {slot.split(" ")[1]}-{slot.split("-")[1]} ({count} user{count !== 1 ? "s" : ""})
+                                            {start}-{end} ({count} user{count !== 1 ? "s" : ""})
                                         </span>
                                     ))}
                                 </div>
